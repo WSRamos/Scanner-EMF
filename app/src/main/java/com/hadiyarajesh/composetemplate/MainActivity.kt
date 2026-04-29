@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
     private var magnitudeHistory = mutableStateListOf<Float>()
     private var wordHistory = mutableStateListOf<String>()
 
-    private val baselineEMF = 45f 
+    // Linha de base estática removida. Utilizando threshold dinâmico.
     private val spikeThreshold = 15f 
     private var isCooldown = false
 
@@ -91,7 +91,11 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
             magnitudeHistory.add(magnitude)
             if (magnitudeHistory.size > 50) magnitudeHistory.removeAt(0)
 
-            if (kotlin.math.abs(magnitude - baselineEMF) > spikeThreshold && !isCooldown) triggerWord()
+            // Cálculo da Média Móvel: O app aprende o nível do ambiente em tempo real
+            val averageEMF = if (magnitudeHistory.isNotEmpty()) magnitudeHistory.average().toFloat() else magnitude
+
+            // Gatilho só dispara se a anomalia for 15μT maior ou menor que a média ATUAL
+            if (kotlin.math.abs(magnitude - averageEMF) > spikeThreshold && !isCooldown) triggerWord()
         }
     }
 
