@@ -1,21 +1,17 @@
 package com.hadiyarajesh.composetemplate
 
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
+import android.hardware.*
+import android.media.*
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,155 +20,225 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.util.Locale
+import java.util.*
 import kotlin.math.sqrt
+import kotlin.random.Random
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnInitListener {
 
     private lateinit var sensorManager: SensorManager
     private var magSensor: Sensor? = null
+    private var accelSensor: Sensor? = null
     private lateinit var tts: TextToSpeech
+    
+    // Motor de Áudio (Spirit Box)
+    private var audioTrack: AudioTrack? = null
+    private var isPlayingWhiteNoise = true
 
+    // Variáveis de Estado da Interface
     private var currentMagnitude by mutableFloatStateOf(0f)
-    private var magnitudeHistory = mutableStateListOf<Float>()
+    private var bgColor by mutableStateOf(Color.Black)
     private var wordHistory = mutableStateListOf<String>()
+    private var magHistory = mutableStateListOf<Float>()
+    
+    // Dicionário Massivo e Controle de Carregamento
+    private var dynamicDictionary = mutableListOf<String>()
+    private var dictLoadedSize by mutableIntStateOf(0)
 
-    private val spikeThreshold = 12f // Sensibilidade aumentada
+    private val spikeThreshold = 12f
+    private val accelThresholdLight = 1.6f
+    private val accelThresholdStrong = 4.2f
     private var isCooldown = false
-
-    // DICIONÁRIO EXPANDIDO (200 PALAVRAS)
-    private val dictionary = arrayOf(
-        "ajuda", "aqui", "agora", "atrás", "amigo", "antigo", "alma", "aviso", "aberto", "baixo",
-        "branco", "breve", "bravo", "caos", "casa", "cuidado", "corra", "criança", "céu", "corpo",
-        "cima", "calma", "caminho", "chão", "cheio", "caixa", "claro", "dor", "deus", "dentro",
-        "depressa", "demônio", "doença", "dormir", "dia", "dizer", "dono", "escuro", "espera", "estranho",
-        "espírito", "esconder", "erro", "eles", "ela", "ele", "está", "eu", "falar", "fogo",
-        "frio", "fome", "fora", "forte", "frente", "final", "fechado", "fácil", "grito", "gelo",
-        "grande", "guardar", "guerra", "homem", "hoje", "hora", "história", "inimigo", "idade", "inferno",
-        "irmão", "igreja", "janela", "juntos", "jamais", "jovem", "jogo", "luz", "longe", "livre",
-        "livro", "lugar", "lado", "lembrar", "lento", "morte", "medo", "mulher", "mão", "mal",
-        "muito", "meu", "mundo", "mudar", "mensagem", "meio", "noite", "nome", "novo", "nunca",
-        "nada", "nós", "nuvem", "olhar", "ouvir", "onde", "ontem", "ouro", "ódio", "objeto",
-        "perto", "perigo", "paz", "porta", "pobre", "povo", "podre", "preto", "passado", "presente",
-        "pai", "pedra", "pequeno", "perda", "perguntar", "poder", "quente", "quem", "quase", "querer",
-        "quarto", "queda", "quebrar", "ruim", "raiva", "rio", "roupa", "rápido", "razão", "rezar",
-        "sangue", "saia", "sombra", "sim", "sozinho", "sempre", "sentir", "santo", "sinal", "sede",
-        "sono", "sujo", "tempo", "triste", "terra", "todo", "tarde", "teto", "traição", "tocar",
-        "trabalho", "último", "unido", "urgente", "usar", "velho", "vida", "vazio", "verdade", "vermelho",
-        "você", "voltar", "vontade", "vento", "vigiar", "viver", "zero", "zona", "animal", "braço",
-        "campo", "doce", "escada", "faca", "garoto", "herança", "ilha", "joelho", "lâmpada", "médico",
-        "navio", "osso", "parede", "queijo", "rato", "sapato", "trem", "urso", "velas", "xadrez"
-    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         magSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         tts = TextToSpeech(this, this)
+        
+        loadWordsAsync()
+        startWhiteNoise()
 
         setContent {
+            val animatedBgColor by animateColorAsState(targetValue = bgColor)
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                    OvilusScreen(magnitude = currentMagnitude, magHistory = magnitudeHistory, words = wordHistory)
+                Surface(modifier = Modifier.fillMaxSize(), color = animatedBgColor) {
+                    InvestigationScreen(currentMagnitude, magHistory, wordHistory, dictLoadedSize)
                 }
             }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        magSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+    private fun loadWordsAsync() {
+        Thread {
+            try {
+                val inputStream = assets.open("words.txt")
+                val reader = BufferedReader(InputStreamReader(inputStream))
+                val tempDict = mutableListOf<String>()
+                var line: String? = reader.readLine()
+                
+                while (line != null) {
+                    if (line.trim().isNotEmpty()) {
+                        tempDict.add(line.trim())
+                    }
+                    line = reader.readLine()
+                }
+                reader.close()
+                dynamicDictionary.addAll(tempDict)
+                dictLoadedSize = dynamicDictionary.size
+            } catch (e: Exception) {
+                // Sistema de contingência caso o arquivo não seja encontrado
+                val fallback = listOf("sistema", "operacional", "dicionário", "offline", "erro", "leitura")
+                dynamicDictionary.addAll(fallback)
+                dictLoadedSize = fallback.size
+            }
+        }.start()
     }
 
-    override fun onPause() {
-        super.onPause()
-        sensorManager.unregisterListener(this)
-    }
-
-    override fun onDestroy() {
-        if (::tts.isInitialized) {
-            tts.stop()
-            tts.shutdown()
-        }
-        super.onDestroy()
+    private fun startWhiteNoise() {
+        val bufferSize = AudioTrack.getMinBufferSize(44100, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        audioTrack = AudioTrack(AudioManager.STREAM_MUSIC, 44100, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize, AudioTrack.MODE_STREAM)
+        
+        Thread {
+            val samples = ShortArray(bufferSize)
+            audioTrack?.play()
+            while (isPlayingWhiteNoise) {
+                for (i in samples.indices) {
+                    samples[i] = (Random.nextInt(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())).toShort()
+                }
+                audioTrack?.write(samples, 0, samples.size)
+                // Varredura TCI: Intervalos entre 60ms e 180ms
+                Thread.sleep(Random.nextLong(60, 180)) 
+            }
+        }.start()
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type == Sensor.TYPE_MAGNETIC_FIELD) {
-            val magnitude = sqrt((event.values[0] * event.values[0] + event.values[1] * event.values[1] + event.values[2] * event.values[2]).toDouble()).toFloat()
-            currentMagnitude = magnitude
-
-            magnitudeHistory.add(magnitude)
-            if (magnitudeHistory.size > 50) magnitudeHistory.removeAt(0)
-
-            val averageEMF = if (magnitudeHistory.isNotEmpty()) magnitudeHistory.average().toFloat() else magnitude
-
-            // LÓGICA DE MAPEAMENTO DIRETO (TIPO OVILUS)
-            if (kotlin.math.abs(magnitude - averageEMF) > spikeThreshold && !isCooldown) {
-                // O valor da magnitude decide a palavra, não o sorteio
-                triggerOvilusWord(magnitude)
+        if (event == null || isCooldown || dynamicDictionary.isEmpty()) return
+        
+        if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) {
+            val mag = sqrt((event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]).toDouble()).toFloat()
+            currentMagnitude = mag
+            magHistory.add(mag)
+            if (magHistory.size > 50) magHistory.removeAt(0)
+            
+            // Lógica de Média Móvel para identificar picos reais
+            if (kotlin.math.abs(mag - magHistory.average().toFloat()) > spikeThreshold) {
+                triggerEvent(mag)
+            }
+        } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+            // Remoção vetorial da gravidade para isolar apenas impactos físicos
+            val acc = sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.8f
+            
+            if (acc > accelThresholdStrong) {
+                flashScreen(Color(0xFF0000FF), "SIM DETECTADO") // Toque Forte = SIM (Azul)
+            } else if (acc > accelThresholdLight) {
+                flashScreen(Color(0xFFFF0000), "NÃO DETECTADO") // Toque Leve = NÃO (Vermelho)
             }
         }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) tts.language = Locale("pt", "BR")
-    }
-
-    private fun triggerOvilusWord(magValue: Float) {
+    private fun triggerEvent(mag: Float) {
         isCooldown = true
         
-        // MAPEAMENTO: Usa o valor magnético para indexar o dicionário
-        // Ex: 54.7 microteslas vira o índice da palavra
-        val index = (magValue.toInt() % dictionary.size).let { if (it < 0) it * -1 else it }
-        val selectedWord = dictionary[index]
+        // Calibração Matemática para o Dicionário Massivo (261k+ palavras)
+        // Multiplicamos por 10000 para transformar frações decimais em índices grandes
+        val seed = (mag * 10000).toLong()
+        val index = (seed % dynamicDictionary.size).toInt().let { if (it < 0) -it else it }
         
-        wordHistory.add(0, selectedWord)
+        val word = dynamicDictionary[index]
+        wordHistory.add(0, word)
         if (wordHistory.size > 8) wordHistory.removeLast()
+        
+        tts.speak(word, TextToSpeech.QUEUE_FLUSH, null, "")
+        
+        Thread { 
+            Thread.sleep(3500) // Cooldown tático para evitar sobreposição de fala
+            isCooldown = false 
+        }.start()
+    }
 
-        tts.speak(selectedWord, TextToSpeech.QUEUE_FLUSH, null, "")
-
+    private fun flashScreen(color: Color, label: String) {
+        isCooldown = true
+        bgColor = color
+        wordHistory.add(0, label)
+        if (wordHistory.size > 8) wordHistory.removeLast()
+        
         Thread {
-            Thread.sleep(4000) // Cooldown levemente maior para análise
+            Thread.sleep(1500)
+            bgColor = Color.Black
+            Thread.sleep(500)
             isCooldown = false
         }.start()
+    }
+
+    override fun onResume() { 
+        super.onResume()
+        magSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+    }
+    
+    override fun onPause() { 
+        super.onPause()
+        sensorManager.unregisterListener(this) 
+    }
+    
+    override fun onDestroy() {
+        isPlayingWhiteNoise = false
+        audioTrack?.stop()
+        audioTrack?.release()
+        tts.stop()
+        tts.shutdown()
+        super.onDestroy()
+    }
+    
+    override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+    override fun onInit(s: Int) { 
+        if (s == TextToSpeech.SUCCESS) tts.language = Locale("pt", "BR") 
     }
 }
 
 @Composable
-fun OvilusScreen(magnitude: Float, magHistory: List<Float>, words: List<String>) {
-    val neonGreen = Color(0xFF39FF14)
-    val radarRed = Color(0xFFFF0000)
-
+fun InvestigationScreen(mag: Float, history: List<Float>, words: List<String>, dictSize: Int) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("SCANNER EMF PRO", color = neonGreen, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
-        Text("${"%.2f".format(magnitude)} μT", color = if (magnitude > 60f) radarRed else neonGreen, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+        Text("SCANNER TÁTICO ULTIMATE", color = Color(0xFF39FF14), fontSize = 18.sp, fontWeight = FontWeight.Black)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("${"%.2f".format(mag)} μT", color = Color(0xFF39FF14), fontSize = 48.sp, fontWeight = FontWeight.Bold)
         
-        Spacer(modifier = Modifier.height(24.dp))
+        // Status do Dicionário
+        if (dictSize > 0) {
+            Text("VOCABULÁRIO: $dictSize PALAVRAS", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        } else {
+            Text("CARREGANDO DICIONÁRIO...", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
         
-        Box(modifier = Modifier.fillMaxWidth().height(150.dp).background(Color.DarkGray.copy(alpha = 0.2f)).padding(8.dp)) {
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // Radar EMF Visão
+        Box(modifier = Modifier.fillMaxWidth().height(120.dp).background(Color.White.copy(alpha = 0.05f))) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                if (magHistory.size > 1) {
-                    val widthPerPoint = size.width / 50f
-                    val maxHeight = size.height
-                    for (i in 0 until magHistory.size - 1) {
-                        drawLine(color = neonGreen, start = Offset(i * widthPerPoint, maxHeight - ((magHistory[i] / 100f) * maxHeight).coerceIn(0f, maxHeight)), end = Offset((i + 1) * widthPerPoint, maxHeight - ((magHistory[i + 1] / 100f) * maxHeight).coerceIn(0f, maxHeight)), strokeWidth = 3f)
+                if (history.size > 1) {
+                    val w = size.width / 50f
+                    for (i in 0 until history.size - 1) {
+                        drawLine(Color(0xFF39FF14), Offset(i*w, size.height - (history[i]/100f*size.height).coerceIn(0f, size.height)), Offset((i+1)*w, size.height - (history[i+1]/100f*size.height).coerceIn(0f, size.height)), 3f)
                     }
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(24.dp))
-        Text("DICIONÁRIO ATIVO", color = Color.Gray, fontSize = 12.sp)
+        
         Spacer(modifier = Modifier.height(8.dp))
-
-        LazyColumn(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            items(words) { word -> 
-                Text(word.uppercase(), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 6.dp)) 
-            }
+        Text("SPIRIT BOX [ SWEEP MODE ] : ACTIVE", color = Color(0xFFFF3333), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // Log de Respostas
+        LazyColumn { 
+            items(words) { 
+                Text(it.uppercase(), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 4.dp)) 
+            } 
         }
     }
 }
-// FIM DO CÓDIGO PRO
+             
