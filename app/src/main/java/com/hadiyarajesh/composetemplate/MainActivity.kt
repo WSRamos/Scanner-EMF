@@ -49,7 +49,7 @@ class AudioEngine {
                     samples[i] = (Random.nextInt(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())).toShort()
                 }
                 audioTrack?.write(samples, 0, samples.size)
-                Thread.sleep(Random.nextLong(60, 180)) // Sweep
+                Thread.sleep(Random.nextLong(60, 180))
             }
         }.start()
     }
@@ -100,7 +100,7 @@ class DictionaryEngine(private val context: Context) {
 }
 
 // ==========================================
-// MÓDULO 3: PAINEL DE CONTROLE (UI E COORDENAÇÃO)
+// MÓDULO 3: PAINEL DE CONTROLE CENTRAL
 // ==========================================
 class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnInitListener {
 
@@ -112,21 +112,25 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
     private var magSensor: Sensor? = null
     private var accelSensor: Sensor? = null
 
-    // Estados da Interface
+    // Estados de Monitoramento
     private var currentMagnitude by mutableFloatStateOf(0f)
     private var bgColor by mutableStateOf(Color.Black)
     private var wordHistory = mutableStateListOf<String>()
     private var magHistory = mutableStateListOf<Float>()
+    private var spelledText by mutableStateOf("")
 
-    // CHAVES DE SELEÇÃO DE MÓDULOS (Interruptores)
+    // MATRIZ DE CHAVES
     private var isEmfActive by mutableStateOf(true)
+    private var isOuijaActive by mutableStateOf(false)
     private var isAudioActive by mutableStateOf(false)
     private var isVibActive by mutableStateOf(false)
 
+    // Calibração Física
     private val spikeThreshold = 12f
     private val accelThresholdLight = 1.6f
     private val accelThresholdStrong = 4.2f
     private var isCooldown = false
+    private var isOuijaCooldown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -147,17 +151,21 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
                         mag = currentMagnitude,
                         history = magHistory,
                         words = wordHistory,
+                        spelledString = spelledText,
                         dictSize = dictionaryEngine.wordsList.size,
                         isLoaded = dictionaryEngine.isLoaded,
                         isEmfActive = isEmfActive,
+                        isOuijaActive = isOuijaActive,
                         isAudioActive = isAudioActive,
                         isVibActive = isVibActive,
                         onEmfToggle = { isEmfActive = it },
-                        onAudioToggle = { active -> 
-                            isAudioActive = active
-                            if (active) audioEngine.startWhiteNoise() else audioEngine.stop()
+                        onOuijaToggle = { isOuijaActive = it },
+                        onAudioToggle = { 
+                            isAudioActive = it
+                            if (it) audioEngine.startWhiteNoise() else audioEngine.stop()
                         },
-                        onVibToggle = { isVibActive = it }
+                        onVibToggle = { isVibActive = it },
+                        onClearOuija = { spelledText = "" }
                     )
                 }
             }
@@ -165,19 +173,20 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || isCooldown || !dictionaryEngine.isLoaded) return
+        if (event == null || !dictionaryEngine.isLoaded) return
         
-        // MÓDULO EMF (Só processa se a chave estiver ligada)
-        if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD && isEmfActive) {
+        if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) {
             val mag = sqrt((event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]).toDouble()).toFloat()
             currentMagnitude = mag
             magHistory.add(mag)
             if (magHistory.size > 50) magHistory.removeAt(0)
             
-            if (kotlin.math.abs(mag - magHistory.average().toFloat()) > spikeThreshold) processEMFSpike(mag)
+            if (kotlin.math.abs(mag - magHistory.average().toFloat()) > spikeThreshold) {
+                if (isEmfActive && !isCooldown) processEMFSpike(mag)
+                if (isOuijaActive && !isOuijaCooldown) processOuijaSpike(mag)
+            }
         } 
-        // MÓDULO SISMÓGRAFO (Só processa se a chave estiver ligada)
-        else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && isVibActive) {
+        else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && isVibActive && !isCooldown) {
             val acc = sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.8f
             if (acc > accelThresholdStrong) flashScreen(Color(0xFF0000FF), "SIM DETECTADO")
             else if (acc > accelThresholdLight) flashScreen(Color(0xFFFF0000), "NÃO DETECTADO")
@@ -190,9 +199,29 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
         
         wordHistory.add(0, word)
         if (wordHistory.size > 8) wordHistory.removeLast()
-        tts.speak(word, TextToSpeech.QUEUE_FLUSH, null, "")
         
+        tts.speak(word, TextToSpeech.QUEUE_FLUSH, null, "")
         Thread { Thread.sleep(3500); isCooldown = false }.start()
+    }
+
+    private fun processOuijaSpike(mag: Float) {
+        isOuijaCooldown = true
+        // O último caractere agora é um espaço real para formatar frases
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ " 
+        val seed = (mag * 10000).toLong()
+        val index = (seed % 27).toInt().let { if (it < 0) -it else it }
+        val letter = alphabet[index].toString()
+
+        spelledText += letter
+        
+        // Limite estendido para 300 caracteres (frases inteiras)
+        if (spelledText.length > 300) spelledText = spelledText.takeLast(300)
+
+        // Fala "Espaço" se cair no espaço em branco para orientar a audição
+        val voz = if (letter == " ") "Espaço" else letter
+        tts.speak(voz, TextToSpeech.QUEUE_ADD, null, "")
+
+        Thread { Thread.sleep(1200); isOuijaCooldown = false }.start()
     }
 
     private fun flashScreen(color: Color, label: String) {
@@ -231,41 +260,49 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
 // ==========================================
 @Composable
 fun TacticalHUD(
-    mag: Float, history: List<Float>, words: List<String>, dictSize: Int, isLoaded: Boolean,
-    isEmfActive: Boolean, isAudioActive: Boolean, isVibActive: Boolean,
-    onEmfToggle: (Boolean) -> Unit, onAudioToggle: (Boolean) -> Unit, onVibToggle: (Boolean) -> Unit
+    mag: Float, history: List<Float>, words: List<String>, spelledString: String, dictSize: Int, isLoaded: Boolean,
+    isEmfActive: Boolean, isOuijaActive: Boolean, isAudioActive: Boolean, isVibActive: Boolean,
+    onEmfToggle: (Boolean) -> Unit, onOuijaToggle: (Boolean) -> Unit, onAudioToggle: (Boolean) -> Unit, onVibToggle: (Boolean) -> Unit,
+    onClearOuija: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         
-        // PAINEL DE SELEÇÃO DE MÓDULOS
-        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            ModuleButton("EMF", isEmfActive, onEmfToggle)
-            ModuleButton("ÁUDIO", isAudioActive, onAudioToggle)
-            ModuleButton("VIBRAÇÃO", isVibActive, onVibToggle)
+        // MATRIZ DE CHAVES
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ModuleButton("DICIONÁRIO", isEmfActive, onEmfToggle)
+                ModuleButton("OUIJA", isOuijaActive, onOuijaToggle)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ModuleButton("SPIRIT BOX", isAudioActive, onAudioToggle)
+                ModuleButton("SISMÓGRAFO", isVibActive, onVibToggle)
+            }
         }
 
         Divider(color = Color.DarkGray, thickness = 1.dp)
         Spacer(modifier = Modifier.height(8.dp))
 
-        Text("SCANNER TÁTICO", color = Color(0xFF39FF14), fontSize = 16.sp, fontWeight = FontWeight.Black)
+        // LEITURA DO HARDWARE
+        Text("SCANNER TÁTICO", color = Color(0xFF39FF14), fontSize = 14.sp, fontWeight = FontWeight.Black)
         
-        if (isEmfActive) {
-            Text("${"%.2f".format(mag)} μT", color = Color(0xFF39FF14), fontSize = 48.sp, fontWeight = FontWeight.Bold)
+        if (isEmfActive || isOuijaActive) {
+            Text("${"%.2f".format(mag)} μT", color = Color(0xFF39FF14), fontSize = 42.sp, fontWeight = FontWeight.Bold)
         } else {
-            Text("OFFLINE", color = Color.Gray, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+            Text("SENSOR STANDBY", color = Color.Gray, fontSize = 36.sp, fontWeight = FontWeight.Bold)
         }
         
         if (isLoaded) {
-            Text("VOCABULÁRIO: $dictSize", color = Color.Gray, fontSize = 10.sp)
+            Text("BANCO DE DADOS: $dictSize", color = Color.Gray, fontSize = 10.sp)
         } else {
             Text("CARREGANDO...", color = Color.Yellow, fontSize = 10.sp)
         }
         
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         
-        // Radar Visual
-        Box(modifier = Modifier.fillMaxWidth().height(100.dp).background(Color.White.copy(alpha = 0.05f))) {
-            if (isEmfActive) {
+        // RADAR
+        Box(modifier = Modifier.fillMaxWidth().height(80.dp).background(Color.White.copy(alpha = 0.05f))) {
+            if (isEmfActive || isOuijaActive) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     if (history.size > 1) {
                         val w = size.width / 50f
@@ -277,12 +314,54 @@ fun TacticalHUD(
             }
         }
         
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // TERMINAL OUIJA (Texto Contínuo)
+        if (isOuijaActive) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF001A1A), RoundedCornerShape(4.dp))
+                    .border(1.dp, Color.Cyan, RoundedCornerShape(4.dp))
+                    .padding(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(), 
+                    horizontalArrangement = Arrangement.SpaceBetween, 
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("TERMINAL DE SOLETRAÇÃO", color = Color.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    
+                    // BOTÃO DE LIMPEZA MANUAL
+                    Box(
+                        modifier = Modifier
+                            .background(Color.Red.copy(alpha = 0.2f), RoundedCornerShape(2.dp))
+                            .border(1.dp, Color.Red, RoundedCornerShape(2.dp))
+                            .clickable { onClearOuija() }
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text("WIPE", color = Color.Red, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text(
+                    text = if (spelledString.isEmpty()) "Aguardando anomalia..." else spelledString,
+                    color = Color.White, 
+                    fontSize = 18.sp, // Tamanho reduzido para leitura de frases
+                    lineHeight = 24.sp,
+                    fontWeight = FontWeight.Normal,
+                    letterSpacing = 1.sp
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
         
-        // Log de Eventos
+        // LOG DE EVENTOS (Dicionário)
         LazyColumn(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) { 
             items(words) { 
-                Text(it.uppercase(), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 4.dp)) 
+                Text(it.uppercase(), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 4.dp)) 
             } 
         }
     }
@@ -296,10 +375,12 @@ fun ModuleButton(label: String, isActive: Boolean, onClick: (Boolean) -> Unit) {
 
     Box(
         modifier = Modifier
+            .width(160.dp)
             .border(1.dp, borderColor, RoundedCornerShape(4.dp))
             .background(bgColor, RoundedCornerShape(4.dp))
             .clickable { onClick(!isActive) }
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
     ) {
         Text(label, color = textColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
