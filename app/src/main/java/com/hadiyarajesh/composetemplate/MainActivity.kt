@@ -26,7 +26,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 import kotlin.math.sqrt
-import kotlin.random.Random
 
 class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnInitListener {
 
@@ -38,16 +37,31 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
     private var magnitudeHistory = mutableStateListOf<Float>()
     private var wordHistory = mutableStateListOf<String>()
 
-    // Linha de base estática removida. Utilizando threshold dinâmico.
-    private val spikeThreshold = 15f 
+    private val spikeThreshold = 12f // Sensibilidade aumentada
     private var isCooldown = false
 
+    // DICIONÁRIO EXPANDIDO (200 PALAVRAS)
     private val dictionary = arrayOf(
-        "frio", "aqui", "ajuda", "nome", "perto", "longe", "espírito", "demônio", "luz", "fogo",
-        "sangue", "morte", "dor", "raiva", "tristeza", "criança", "mulher", "homem", "sim", "não",
-        "talvez", "corra", "saia", "aviso", "perigo", "mal", "paz", "deus", "cuidado", "olhe",
-        "atrás", "frente", "baixo", "cima", "chão", "teto", "janela", "porta", "escondido", "medo",
-        "vivo", "morto", "alma", "sombra", "eco", "silêncio", "grito", "fale", "ouça", "espere"
+        "ajuda", "aqui", "agora", "atrás", "amigo", "antigo", "alma", "aviso", "aberto", "baixo",
+        "branco", "breve", "bravo", "caos", "casa", "cuidado", "corra", "criança", "céu", "corpo",
+        "cima", "calma", "caminho", "chão", "cheio", "caixa", "claro", "dor", "deus", "dentro",
+        "depressa", "demônio", "doença", "dormir", "dia", "dizer", "dono", "escuro", "espera", "estranho",
+        "espírito", "esconder", "erro", "eles", "ela", "ele", "está", "eu", "falar", "fogo",
+        "frio", "fome", "fora", "forte", "frente", "final", "fechado", "fácil", "grito", "gelo",
+        "grande", "guardar", "guerra", "homem", "hoje", "hora", "história", "inimigo", "idade", "inferno",
+        "irmão", "igreja", "janela", "juntos", "jamais", "jovem", "jogo", "luz", "longe", "livre",
+        "livro", "lugar", "lado", "lembrar", "lento", "morte", "medo", "mulher", "mão", "mal",
+        "muito", "meu", "mundo", "mudar", "mensagem", "meio", "noite", "nome", "novo", "nunca",
+        "nada", "nós", "nuvem", "olhar", "ouvir", "onde", "ontem", "ouro", "ódio", "objeto",
+        "perto", "perigo", "paz", "porta", "pobre", "povo", "podre", "preto", "passado", "presente",
+        "pai", "pedra", "pequeno", "perda", "perguntar", "poder", "quente", "quem", "quase", "querer",
+        "quarto", "queda", "quebrar", "ruim", "raiva", "rio", "roupa", "rápido", "razão", "rezar",
+        "sangue", "saia", "sombra", "sim", "sozinho", "sempre", "sentir", "santo", "sinal", "sede",
+        "sono", "sujo", "tempo", "triste", "terra", "todo", "tarde", "teto", "traição", "tocar",
+        "trabalho", "último", "unido", "urgente", "usar", "velho", "vida", "vazio", "verdade", "vermelho",
+        "você", "voltar", "vontade", "vento", "vigiar", "viver", "zero", "zona", "animal", "braço",
+        "campo", "doce", "escada", "faca", "garoto", "herança", "ilha", "joelho", "lâmpada", "médico",
+        "navio", "osso", "parede", "queijo", "rato", "sapato", "trem", "urso", "velas", "xadrez"
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,11 +105,13 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
             magnitudeHistory.add(magnitude)
             if (magnitudeHistory.size > 50) magnitudeHistory.removeAt(0)
 
-            // Cálculo da Média Móvel: O app aprende o nível do ambiente em tempo real
             val averageEMF = if (magnitudeHistory.isNotEmpty()) magnitudeHistory.average().toFloat() else magnitude
 
-            // Gatilho só dispara se a anomalia for 15μT maior ou menor que a média ATUAL
-            if (kotlin.math.abs(magnitude - averageEMF) > spikeThreshold && !isCooldown) triggerWord()
+            // LÓGICA DE MAPEAMENTO DIRETO (TIPO OVILUS)
+            if (kotlin.math.abs(magnitude - averageEMF) > spikeThreshold && !isCooldown) {
+                // O valor da magnitude decide a palavra, não o sorteio
+                triggerOvilusWord(magnitude)
+            }
         }
     }
 
@@ -105,17 +121,21 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
         if (status == TextToSpeech.SUCCESS) tts.language = Locale("pt", "BR")
     }
 
-    private fun triggerWord() {
+    private fun triggerOvilusWord(magValue: Float) {
         isCooldown = true
-        val randomWord = dictionary[Random.nextInt(dictionary.size)]
         
-        wordHistory.add(0, randomWord)
-        if (wordHistory.size > 5) wordHistory.removeLast()
+        // MAPEAMENTO: Usa o valor magnético para indexar o dicionário
+        // Ex: 54.7 microteslas vira o índice da palavra
+        val index = (magValue.toInt() % dictionary.size).let { if (it < 0) it * -1 else it }
+        val selectedWord = dictionary[index]
+        
+        wordHistory.add(0, selectedWord)
+        if (wordHistory.size > 8) wordHistory.removeLast()
 
-        tts.speak(randomWord, TextToSpeech.QUEUE_FLUSH, null, "")
+        tts.speak(selectedWord, TextToSpeech.QUEUE_FLUSH, null, "")
 
         Thread {
-            Thread.sleep(3000)
+            Thread.sleep(4000) // Cooldown levemente maior para análise
             isCooldown = false
         }.start()
     }
@@ -127,10 +147,12 @@ fun OvilusScreen(magnitude: Float, magHistory: List<Float>, words: List<String>)
     val radarRed = Color(0xFFFF0000)
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("SCANNER EMF", color = neonGreen, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+        Text("SCANNER EMF PRO", color = neonGreen, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
         Text("${"%.2f".format(magnitude)} μT", color = if (magnitude > 60f) radarRed else neonGreen, fontSize = 48.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(32.dp))
-        Box(modifier = Modifier.fillMaxWidth().height(150.dp).background(Color.DarkGray.copy(alpha = 0.3f)).padding(8.dp)) {
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Box(modifier = Modifier.fillMaxWidth().height(150.dp).background(Color.DarkGray.copy(alpha = 0.2f)).padding(8.dp)) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 if (magHistory.size > 1) {
                     val widthPerPoint = size.width / 50f
@@ -141,11 +163,16 @@ fun OvilusScreen(magnitude: Float, magHistory: List<Float>, words: List<String>)
                 }
             }
         }
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("HISTÓRICO", color = neonGreen, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("DICIONÁRIO ATIVO", color = Color.Gray, fontSize = 12.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+
         LazyColumn(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            items(words) { word -> Text(word.uppercase(), color = Color.White, fontSize = 22.sp, modifier = Modifier.padding(vertical = 4.dp)) }
+            items(words) { word -> 
+                Text(word.uppercase(), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 6.dp)) 
+            }
         }
     }
 }
-// FIM DO CÓDIGO
+// FIM DO CÓDIGO PRO
