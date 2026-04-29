@@ -12,6 +12,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -48,7 +49,7 @@ class AudioEngine {
                     samples[i] = (Random.nextInt(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())).toShort()
                 }
                 audioTrack?.write(samples, 0, samples.size)
-                Thread.sleep(Random.nextLong(60, 180)) // Efeito de varredura (Sweep)
+                Thread.sleep(Random.nextLong(60, 180)) // Sweep
             }
         }.start()
     }
@@ -57,6 +58,7 @@ class AudioEngine {
         isPlaying = false
         audioTrack?.stop()
         audioTrack?.release()
+        audioTrack = null
     }
 }
 
@@ -102,23 +104,25 @@ class DictionaryEngine(private val context: Context) {
 // ==========================================
 class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnInitListener {
 
-    // Instâncias dos Módulos Independentes
     private val audioEngine = AudioEngine()
     private lateinit var dictionaryEngine: DictionaryEngine
     private lateinit var tts: TextToSpeech
 
-    // Instâncias de Hardware
     private lateinit var sensorManager: SensorManager
     private var magSensor: Sensor? = null
     private var accelSensor: Sensor? = null
 
-    // Estados da Interface (Monitoramento Visível)
+    // Estados da Interface
     private var currentMagnitude by mutableFloatStateOf(0f)
     private var bgColor by mutableStateOf(Color.Black)
     private var wordHistory = mutableStateListOf<String>()
     private var magHistory = mutableStateListOf<Float>()
 
-    // Calibração Tática
+    // CHAVES DE SELEÇÃO DE MÓDULOS (Interruptores)
+    private var isEmfActive by mutableStateOf(true)
+    private var isAudioActive by mutableStateOf(false)
+    private var isVibActive by mutableStateOf(false)
+
     private val spikeThreshold = 12f
     private val accelThresholdLight = 1.6f
     private val accelThresholdStrong = 4.2f
@@ -127,42 +131,53 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Inicializa Hardware
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         magSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         tts = TextToSpeech(this, this)
         
-        // Inicializa Módulos Internos
         dictionaryEngine = DictionaryEngine(this)
         dictionaryEngine.loadAsync()
-        audioEngine.startWhiteNoise()
 
         setContent {
             val animatedBgColor by animateColorAsState(targetValue = bgColor)
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = animatedBgColor) {
-                    TacticalHUD(currentMagnitude, magHistory, wordHistory, dictionaryEngine.wordsList.size, dictionaryEngine.isLoaded)
+                    TacticalHUD(
+                        mag = currentMagnitude,
+                        history = magHistory,
+                        words = wordHistory,
+                        dictSize = dictionaryEngine.wordsList.size,
+                        isLoaded = dictionaryEngine.isLoaded,
+                        isEmfActive = isEmfActive,
+                        isAudioActive = isAudioActive,
+                        isVibActive = isVibActive,
+                        onEmfToggle = { isEmfActive = it },
+                        onAudioToggle = { active -> 
+                            isAudioActive = active
+                            if (active) audioEngine.startWhiteNoise() else audioEngine.stop()
+                        },
+                        onVibToggle = { isVibActive = it }
+                    )
                 }
             }
         }
     }
 
-    // ==========================================
-    // LÓGICA DE PROCESSAMENTO DE SENSORES
-    // ==========================================
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || isCooldown || !dictionaryEngine.isLoaded) return
         
-        if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) {
+        // MÓDULO EMF (Só processa se a chave estiver ligada)
+        if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD && isEmfActive) {
             val mag = sqrt((event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]).toDouble()).toFloat()
             currentMagnitude = mag
             magHistory.add(mag)
             if (magHistory.size > 50) magHistory.removeAt(0)
             
             if (kotlin.math.abs(mag - magHistory.average().toFloat()) > spikeThreshold) processEMFSpike(mag)
-            
-        } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+        } 
+        // MÓDULO SISMÓGRAFO (Só processa se a chave estiver ligada)
+        else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && isVibActive) {
             val acc = sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.8f
             if (acc > accelThresholdStrong) flashScreen(Color(0xFF0000FF), "SIM DETECTADO")
             else if (acc > accelThresholdLight) flashScreen(Color(0xFFFF0000), "NÃO DETECTADO")
@@ -177,10 +192,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
         if (wordHistory.size > 8) wordHistory.removeLast()
         tts.speak(word, TextToSpeech.QUEUE_FLUSH, null, "")
         
-        Thread { 
-            Thread.sleep(3500) 
-            isCooldown = false 
-        }.start()
+        Thread { Thread.sleep(3500); isCooldown = false }.start()
     }
 
     private fun flashScreen(color: Color, label: String) {
@@ -197,69 +209,98 @@ class MainActivity : ComponentActivity(), SensorEventListener, TextToSpeech.OnIn
         }.start()
     }
 
-    // ==========================================
-    // CONTROLE DE CICLO DE VIDA E MEMÓRIA
-    // ==========================================
     override fun onResume() { 
         super.onResume()
         magSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
     
-    override fun onPause() { 
-        super.onPause()
-        sensorManager.unregisterListener(this) 
-    }
-    
+    override fun onPause() { super.onPause(); sensorManager.unregisterListener(this) }
     override fun onDestroy() {
         audioEngine.stop()
         tts.stop()
         tts.shutdown()
         super.onDestroy()
     }
-    
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     override fun onInit(s: Int) { if (s == TextToSpeech.SUCCESS) tts.language = Locale("pt", "BR") }
 }
 
 // ==========================================
-// INTERFACE GRÁFICA (JETPACK COMPOSE)
+// INTERFACE GRÁFICA (PAINEL TÁTICO)
 // ==========================================
 @Composable
-fun TacticalHUD(mag: Float, history: List<Float>, words: List<String>, dictSize: Int, isLoaded: Boolean) {
+fun TacticalHUD(
+    mag: Float, history: List<Float>, words: List<String>, dictSize: Int, isLoaded: Boolean,
+    isEmfActive: Boolean, isAudioActive: Boolean, isVibActive: Boolean,
+    onEmfToggle: (Boolean) -> Unit, onAudioToggle: (Boolean) -> Unit, onVibToggle: (Boolean) -> Unit
+) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("SCANNER TÁTICO MODULAR", color = Color(0xFF39FF14), fontSize = 18.sp, fontWeight = FontWeight.Black)
+        
+        // PAINEL DE SELEÇÃO DE MÓDULOS
+        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            ModuleButton("EMF", isEmfActive, onEmfToggle)
+            ModuleButton("ÁUDIO", isAudioActive, onAudioToggle)
+            ModuleButton("VIBRAÇÃO", isVibActive, onVibToggle)
+        }
+
+        Divider(color = Color.DarkGray, thickness = 1.dp)
         Spacer(modifier = Modifier.height(8.dp))
-        Text("${"%.2f".format(mag)} μT", color = Color(0xFF39FF14), fontSize = 48.sp, fontWeight = FontWeight.Bold)
+
+        Text("SCANNER TÁTICO", color = Color(0xFF39FF14), fontSize = 16.sp, fontWeight = FontWeight.Black)
+        
+        if (isEmfActive) {
+            Text("${"%.2f".format(mag)} μT", color = Color(0xFF39FF14), fontSize = 48.sp, fontWeight = FontWeight.Bold)
+        } else {
+            Text("OFFLINE", color = Color.Gray, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+        }
         
         if (isLoaded) {
-            Text("VOCABULÁRIO: $dictSize PALAVRAS", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text("VOCABULÁRIO: $dictSize", color = Color.Gray, fontSize = 10.sp)
         } else {
-            Text("CARREGANDO DADOS...", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("CARREGANDO...", color = Color.Yellow, fontSize = 10.sp)
         }
         
         Spacer(modifier = Modifier.height(16.dp))
         
-        Box(modifier = Modifier.fillMaxWidth().height(120.dp).background(Color.White.copy(alpha = 0.05f))) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                if (history.size > 1) {
-                    val w = size.width / 50f
-                    for (i in 0 until history.size - 1) {
-                        drawLine(Color(0xFF39FF14), Offset(i*w, size.height - (history[i]/100f*size.height).coerceIn(0f, size.height)), Offset((i+1)*w, size.height - (history[i+1]/100f*size.height).coerceIn(0f, size.height)), 3f)
+        // Radar Visual
+        Box(modifier = Modifier.fillMaxWidth().height(100.dp).background(Color.White.copy(alpha = 0.05f))) {
+            if (isEmfActive) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    if (history.size > 1) {
+                        val w = size.width / 50f
+                        for (i in 0 until history.size - 1) {
+                            drawLine(Color(0xFF39FF14), Offset(i*w, size.height - (history[i]/100f*size.height).coerceIn(0f, size.height)), Offset((i+1)*w, size.height - (history[i+1]/100f*size.height).coerceIn(0f, size.height)), 3f)
+                        }
                     }
                 }
             }
         }
         
-        Spacer(modifier = Modifier.height(8.dp))
-        Text("AUDIO SWEEP ENGINE: ONLINE", color = Color(0xFFFF3333), fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(24.dp))
         
-        LazyColumn { 
+        // Log de Eventos
+        LazyColumn(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) { 
             items(words) { 
-                Text(it.uppercase(), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 4.dp)) 
+                Text(it.uppercase(), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(vertical = 4.dp)) 
             } 
         }
     }
 }
-        
+
+@Composable
+fun ModuleButton(label: String, isActive: Boolean, onClick: (Boolean) -> Unit) {
+    val bgColor = if (isActive) Color(0xFF39FF14).copy(alpha = 0.2f) else Color.Transparent
+    val textColor = if (isActive) Color(0xFF39FF14) else Color.Gray
+    val borderColor = if (isActive) Color(0xFF39FF14) else Color.DarkGray
+
+    Box(
+        modifier = Modifier
+            .border(1.dp, borderColor, RoundedCornerShape(4.dp))
+            .background(bgColor, RoundedCornerShape(4.dp))
+            .clickable { onClick(!isActive) }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Text(label, color = textColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    }
+}
